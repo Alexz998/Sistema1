@@ -1,0 +1,7 @@
+# Arquivos grandes 
+Output/ 
+mongodb.msi 
+# Dependencies 
+node_modules/ 
+# Env 
+.env 
