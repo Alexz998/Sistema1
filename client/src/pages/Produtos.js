@@ -20,7 +20,7 @@ import DeleteIcon from '@mui/icons-material/Delete';
 import axios from 'axios';
 import { toast } from 'react-toastify';
 
-const API_URL = 'http://localhost:5001/api';
+const API_URL = 'http://localhost:5002/api';
 
 function Produtos() {
   const [produtos, setProdutos] = useState([]);

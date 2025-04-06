@@ -16,6 +16,9 @@ export const AuthProvider = ({ children }) => {
   const [user, setUser] = useState(null);
   const [loading, setLoading] = useState(true);
 
+  // Configurar a URL base do axios
+  axios.defaults.baseURL = 'http://localhost:5002';
+
   useEffect(() => {
     const token = localStorage.getItem('token');
     if (token) {
@@ -27,7 +30,7 @@ export const AuthProvider = ({ children }) => {
 
   const login = async (email, senha) => {
     try {
-      const response = await axios.post('http://localhost:5001/api/auth/login', {
+      const response = await axios.post('/api/auth/login', {
         email,
         senha,
       });

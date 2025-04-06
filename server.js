@@ -5,6 +5,8 @@ const jwt = require('jsonwebtoken');
 const multer = require('multer');
 const crypto = require('crypto');
 const nodemailer = require('nodemailer');
+const { format } = require('date-fns');
+const ptBR = require('date-fns/locale/pt-BR');
 require('dotenv').config();
 
 const app = express();
@@ -48,39 +50,60 @@ app.post('/api/auth/registro', async (req, res) => {
   try {
     const usuario = new Usuario(req.body);
     await usuario.save();
-    const token = jwt.sign(
-      { id: usuario._id },
-      process.env.JWT_SECRET || 'sua_chave_secreta',
-      { expiresIn: '24h' }
-    );
-    res.status(201).json({ token });
+    const token = jwt.sign({ id: usuario._id }, process.env.JWT_SECRET);
+    res.status(201).send({ token, user: usuario });
   } catch (error) {
-    res.status(400).json({ message: error.message });
+    res.status(400).send(error);
+  }
+});
+
+// Criar usuário admin se não existir
+app.post('/api/auth/criar-admin', async (req, res) => {
+  try {
+    const admin = await Usuario.findOne({ email: 'admin@admin.com' });
+    if (!admin) {
+      const novoAdmin = new Usuario({
+        email: 'admin@admin.com',
+        senha: 'admin123',
+        nome: 'Administrador'
+      });
+      await novoAdmin.save();
+      console.log('Usuário admin criado com sucesso');
+      res.status(201).send({ message: 'Usuário admin criado com sucesso' });
+    } else {
+      console.log('Usuário admin já existe');
+      res.status(200).send({ message: 'Usuário admin já existe' });
+    }
+  } catch (error) {
+    console.error('Erro ao criar usuário admin:', error);
+    res.status(400).send(error);
   }
 });
 
 app.post('/api/auth/login', async (req, res) => {
   try {
     const { email, senha } = req.body;
+    console.log('Tentativa de login:', { email }); // Log para debug
+    
     const usuario = await Usuario.findOne({ email });
     
     if (!usuario) {
-      return res.status(401).json({ message: 'Email ou senha inválidos' });
+      console.log('Usuário não encontrado'); // Log para debug
+      return res.status(401).send({ error: 'Credenciais inválidas' });
     }
 
-    const senhaCorreta = await usuario.compararSenha(senha);
-    if (!senhaCorreta) {
-      return res.status(401).json({ message: 'Email ou senha inválidos' });
+    const isMatch = await usuario.compararSenha(senha);
+    if (!isMatch) {
+      console.log('Senha incorreta'); // Log para debug
+      return res.status(401).send({ error: 'Credenciais inválidas' });
     }
 
-    const token = jwt.sign(
-      { id: usuario._id },
-      process.env.JWT_SECRET || 'sua_chave_secreta',
-      { expiresIn: '24h' }
-    );
-    res.json({ token, user: { id: usuario._id, email: usuario.email } });
+    const token = jwt.sign({ id: usuario._id }, process.env.JWT_SECRET);
+    console.log('Login bem-sucedido'); // Log para debug
+    res.send({ token, user: { id: usuario._id, email: usuario.email, nome: usuario.nome } });
   } catch (error) {
-    res.status(500).json({ message: error.message });
+    console.error('Erro no login:', error); // Log para debug
+    res.status(400).send(error);
   }
 });
 
@@ -190,9 +213,12 @@ app.post('/api/vendas', auth, async (req, res) => {
 
 app.get('/api/vendas', auth, async (req, res) => {
   try {
-    const vendas = await Venda.find();
+    const vendas = await Venda.find()
+      .populate('itens.produto', 'nome preco')
+      .sort({ data: -1 });
     res.json(vendas);
   } catch (error) {
+    console.error('Erro ao buscar vendas:', error);
     res.status(500).json({ message: error.message });
   }
 });
@@ -621,6 +647,61 @@ app.get('/api/vendas/produtos/mensais/:mes/:ano', async (req, res) => {
     res.json(Object.values(produtosMensais));
   } catch (error) {
     res.status(500).json({ message: error.message });
+  }
+});
+
+// Rota para Dashboard
+app.get('/api/dashboard', auth, async (req, res) => {
+  try {
+    console.log('Iniciando busca de dados da dashboard...');
+
+    // Buscar todas as vendas e despesas
+    const vendas = await Venda.find()
+      .sort({ data: -1 })
+      .select('data cliente valor')
+      .limit(10);
+
+    const despesas = await Despesa.find()
+      .sort({ data: -1 })
+      .select('data descricao valor')
+      .limit(10);
+
+    console.log('Vendas encontradas:', vendas.length);
+    console.log('Despesas encontradas:', despesas.length);
+
+    // Calcular totais
+    const totalVendas = vendas.reduce((acc, v) => acc + (v.valor || 0), 0);
+    const totalDespesas = despesas.reduce((acc, d) => acc + (d.valor || 0), 0);
+
+    // Formatar dados para resposta
+    const response = {
+      resumo: {
+        totalVendas,
+        totalDespesas,
+        saldo: totalVendas - totalDespesas
+      },
+      ultimasVendas: vendas.map(v => ({
+        id: v._id,
+        data: format(v.data, 'dd/MM/yyyy', { locale: ptBR }),
+        descricao: v.cliente || 'Cliente não informado',
+        valor: v.valor || 0
+      })),
+      ultimasDespesas: despesas.map(d => ({
+        id: d._id,
+        data: format(d.data, 'dd/MM/yyyy', { locale: ptBR }),
+        descricao: d.descricao || 'Descrição não informada',
+        valor: d.valor || 0
+      }))
+    };
+
+    console.log('Resposta formatada:', response);
+    res.json(response);
+  } catch (error) {
+    console.error('Erro ao buscar dados da dashboard:', error);
+    res.status(500).json({ 
+      message: 'Erro ao buscar dados da dashboard',
+      error: error.message 
+    });
   }
 });
 

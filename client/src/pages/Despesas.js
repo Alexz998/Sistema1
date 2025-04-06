@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import {
   Box,
   Button,
@@ -25,7 +25,10 @@ import {
   Collapse,
   FormControl,
   InputLabel,
-  Select
+  Select,
+  ListItemIcon,
+  ListItemText,
+  InputAdornment
 } from '@mui/material';
 import { 
   Add as AddIcon, 
@@ -49,6 +52,7 @@ import jsPDF from 'jspdf';
 import 'jspdf-autotable';
 import * as XLSX from 'xlsx';
 import GerenciarCategorias from '../components/GerenciarCategorias';
+import { formatarMoeda, formatarNumero, formatarQuantidade } from '../utils/formatadores';
 
 const FORMAS_PAGAMENTO = [
   'Dinheiro',
@@ -59,7 +63,9 @@ const FORMAS_PAGAMENTO = [
 ];
 
 function Despesas() {
-  const { despesas, isLoading, addDespesa, updateDespesa, deleteDespesa } = useDespesas();
+  const [page, setPage] = useState(1);
+  const [limit, setLimit] = useState(10);
+  const { despesas, isLoading, error, addDespesa, updateDespesa, deleteDespesa } = useDespesas(page, limit);
   const { categorias, atualizarCategorias } = useCategorias();
   const [open, setOpen] = useState(false);
   const [editingDespesa, setEditingDespesa] = useState(null);
@@ -85,10 +91,13 @@ function Despesas() {
   const queryClient = useQueryClient();
 
   const handleOpen = (despesa = null) => {
-    if (despesa) {
+    console.log('Abrindo formulário com despesa:', despesa);
+    if (despesa && despesa._id) {
       setEditingDespesa(despesa);
+      const dataObj = new Date(despesa.data);
+      dataObj.setHours(12, 0, 0, 0);
       setFormData({
-        data: despesa.data,
+        data: dataObj.toISOString().split('T')[0],
         categoria: despesa.categoria,
         valor: despesa.valor,
         formaPagamento: despesa.formaPagamento,
@@ -96,8 +105,10 @@ function Despesas() {
       });
     } else {
       setEditingDespesa(null);
+      const hoje = new Date();
+      hoje.setHours(12, 0, 0, 0);
       setFormData({
-        data: new Date().toISOString().split('T')[0],
+        data: hoje.toISOString().split('T')[0],
         categoria: '',
         valor: '',
         formaPagamento: '',
@@ -124,25 +135,34 @@ function Despesas() {
     e.preventDefault();
     try {
       console.log('Dados do formulário antes da formatação:', formData);
+      console.log('Editando despesa:', editingDespesa);
+      
+      // Formatação da data para garantir o dia correto
+      const dataObj = new Date(formData.data);
+      // Adiciona um dia à data
+      dataObj.setDate(dataObj.getDate() + 1);
+      const dataFormatada = dataObj.toISOString().split('T')[0];
       
       const despesaFormatada = {
         ...formData,
-        data: new Date(formData.data).toISOString(),
+        data: dataFormatada,
         valor: Number(formData.valor)
       };
       
       console.log('Dados formatados para envio:', despesaFormatada);
 
-      if (editingDespesa) {
+      if (editingDespesa && editingDespesa._id) {
+        console.log('Modo: Atualização - ID:', editingDespesa._id);
         await updateDespesa({
           id: editingDespesa._id,
           despesa: despesaFormatada
         });
       } else {
+        console.log('Modo: Criação');
         await addDespesa(despesaFormatada);
       }
+      
       handleClose();
-      queryClient.invalidateQueries(['despesas']);
     } catch (error) {
       console.error('Erro ao salvar despesa:', error);
       console.error('Detalhes do erro:', error.response?.data);
@@ -404,6 +424,13 @@ function Despesas() {
     toast.success('Categorias atualizadas com sucesso!');
   };
 
+  // Adicionar useEffect para recarregar dados quando o modal é fechado
+  useEffect(() => {
+    if (!open) {
+      queryClient.invalidateQueries(['despesas']);
+    }
+  }, [open, queryClient]);
+
   if (isLoading) {
     return (
       <Box display="flex" justifyContent="center" alignItems="center" minHeight="100vh">
@@ -436,21 +463,31 @@ function Despesas() {
             Exportar Despesas
           </Button>
           <Menu
+            id="export-menu"
             anchorEl={anchorEl}
             open={openMenu}
             onClose={handleExportClose}
+            MenuListProps={{
+              'aria-labelledby': 'export-button'
+            }}
           >
             <MenuItem onClick={exportarDespesasPDF}>
-              <PictureAsPdfIcon sx={{ mr: 1 }} />
-              Exportar como PDF
+              <ListItemIcon>
+                <PictureAsPdfIcon fontSize="small" />
+              </ListItemIcon>
+              <ListItemText>Exportar como PDF</ListItemText>
             </MenuItem>
             <MenuItem onClick={exportarDespesasExcel}>
-              <TableViewIcon sx={{ mr: 1 }} />
-              Exportar como Excel
+              <ListItemIcon>
+                <TableViewIcon fontSize="small" />
+              </ListItemIcon>
+              <ListItemText>Exportar como Excel</ListItemText>
             </MenuItem>
             <MenuItem onClick={exportarDespesasTexto}>
-              <TextSnippetIcon sx={{ mr: 1 }} />
-              Exportar como Texto
+              <ListItemIcon>
+                <TextSnippetIcon fontSize="small" />
+              </ListItemIcon>
+              <ListItemText>Exportar como Texto</ListItemText>
             </MenuItem>
           </Menu>
           <Button
@@ -590,7 +627,7 @@ function Despesas() {
                   {format(new Date(despesa.data), 'dd/MM/yyyy', { locale: ptBR })}
                 </TableCell>
                 <TableCell>{despesa.categoria}</TableCell>
-                <TableCell>R$ {Number(despesa.valor).toFixed(2)}</TableCell>
+                <TableCell>{formatarMoeda(despesa.valor)}</TableCell>
                 <TableCell>{despesa.formaPagamento}</TableCell>
                 <TableCell>{despesa.descricao}</TableCell>
                 <TableCell>
@@ -606,6 +643,28 @@ function Despesas() {
           </TableBody>
         </Table>
       </TableContainer>
+
+      {/* Totalizador de Despesas */}
+      <Box sx={{ mt: 2, p: 2, bgcolor: 'background.paper', borderRadius: 1 }}>
+        <Grid container spacing={2}>
+          <Grid item xs={12} sm={6} md={3}>
+            <Typography variant="subtitle1" color="text.secondary">
+              Total de Despesas:
+            </Typography>
+            <Typography variant="h6" color="error.main">
+              {formatarMoeda(despesasFiltradas.reduce((total, despesa) => total + Number(despesa.valor), 0))}
+            </Typography>
+          </Grid>
+          <Grid item xs={12} sm={6} md={3}>
+            <Typography variant="subtitle1" color="text.secondary">
+              Quantidade de Despesas:
+            </Typography>
+            <Typography variant="h6">
+              {formatarQuantidade(despesasFiltradas.length)}
+            </Typography>
+          </Grid>
+        </Grid>
+      </Box>
 
       <Dialog open={open} onClose={handleClose} maxWidth="sm" fullWidth>
         <DialogTitle>
@@ -648,11 +707,16 @@ function Despesas() {
                   fullWidth
                   label="Valor"
                   name="valor"
-                  type="number"
                   value={formData.valor}
                   onChange={handleChange}
                   required
-                  inputProps={{ step: "0.01", min: "0" }}
+                  InputProps={{
+                    startAdornment: <InputAdornment position="start">R$</InputAdornment>,
+                  }}
+                  inputProps={{
+                    step: "0.01",
+                    min: "0"
+                  }}
                 />
               </Grid>
               <Grid item xs={12}>

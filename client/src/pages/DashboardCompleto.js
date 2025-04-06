@@ -31,10 +31,13 @@ import { ptBR } from 'date-fns/locale';
 import jsPDF from 'jspdf';
 import 'jspdf-autotable';
 import * as XLSX from 'xlsx';
-import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip as ChartTooltip, ResponsiveContainer } from 'recharts';
+import {
+  LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip as ChartTooltip, ResponsiveContainer,
+  PieChart, Pie, Cell, Legend
+} from 'recharts';
 import { toast } from 'react-toastify';
 
-const API_URL = 'http://localhost:5001/api';
+const API_URL = 'http://localhost:5002/api';
 
 function DashboardCompleto() {
   // Estados da Dashboard
@@ -54,12 +57,21 @@ function DashboardCompleto() {
   });
   const [vendasMensais, setVendasMensais] = useState([]);
   const [produtosMensais, setProdutosMensais] = useState([]);
+  const [despesasGrafico, setDespesasGrafico] = useState([]);
 
   useEffect(() => {
     fetchData();
     fetchMetaAtual();
     fetchDadosMensais();
   }, []);
+
+  useEffect(() => {
+    console.log('Data Inicial:', dataInicial);
+    console.log('Data Final:', dataFinal);
+    if (dataInicial && dataFinal) {
+      fetchData();
+    }
+  }, [dataInicial, dataFinal]);
 
   // Funções da Dashboard
   const fetchData = async () => {
@@ -81,19 +93,26 @@ function DashboardCompleto() {
       const vendasFormatadas = vendasRes.data.map(venda => ({
         ...venda,
         id: venda._id,
-        descricao: venda.observacoes || ''
+        descricao: venda.observacoes || '',
+        itens: venda.itens.map(item => ({
+          ...item,
+          nomeProduto: item.produto?.nome || 'Produto não encontrado',
+          quantidade: item.quantidade || 0
+        }))
       }));
       
       const despesasFormatadas = despesasRes.data.map(despesa => ({
         ...despesa,
         id: despesa._id,
-        descricao: despesa.descricao || ''
+        descricao: despesa.descricao || '',
+        categoria: despesa.categoria || 'Sem categoria'
       }));
 
       setVendas(vendasFormatadas);
       setDespesas(despesasFormatadas);
     } catch (error) {
       console.error('Erro ao carregar dados:', error);
+      toast.error('Erro ao carregar dados do dashboard');
     } finally {
       setIsLoading(false);
     }
@@ -123,13 +142,46 @@ function DashboardCompleto() {
       const mes = hoje.getMonth() + 1;
       const ano = hoje.getFullYear();
       
-      const [responseVendas, responseProdutos] = await Promise.all([
+      const [responseVendas, responseProdutos, responseDespesas] = await Promise.all([
         axios.get(`${API_URL}/vendas/mensais/${mes}/${ano}`),
-        axios.get(`${API_URL}/vendas/produtos/mensais/${mes}/${ano}`)
+        axios.get(`${API_URL}/vendas/produtos/mensais/${mes}/${ano}`),
+        axios.get(`${API_URL}/despesas`, {
+          headers: {
+            Authorization: `Bearer ${localStorage.getItem('token')}`
+          }
+        })
       ]);
+
+      // Formatar dados de vendas mensais
+      const vendasMensaisFormatadas = responseVendas.data.map(item => ({
+        ...item,
+        totalFormatado: `R$ ${item.total.toFixed(2)}`
+      }));
       
-      setVendasMensais(responseVendas.data);
-      setProdutosMensais(responseProdutos.data);
+      // Formatar dados de produtos mensais
+      const produtosMensaisFormatados = responseProdutos.data.map(item => ({
+        ...item,
+        nome: 'Quantidade',
+        totalFormatado: `${item.total} unidades`
+      }));
+
+      // Agrupar despesas por categoria
+      const despesasPorCategoria = responseDespesas.data.reduce((acc, despesa) => {
+        const categoria = despesa.categoria || 'Sem categoria';
+        acc[categoria] = (acc[categoria] || 0) + Number(despesa.valor);
+        return acc;
+      }, {});
+
+      // Formatar dados para o gráfico de pizza
+      const despesasFormatadas = Object.entries(despesasPorCategoria).map(([categoria, valor]) => ({
+        categoria,
+        valor,
+        valorFormatado: `R$ ${valor.toFixed(2)}`
+      }));
+
+      setVendasMensais(vendasMensaisFormatadas);
+      setProdutosMensais(produtosMensaisFormatados);
+      setDespesasGrafico(despesasFormatadas);
     } catch (error) {
       console.error('Erro ao buscar dados mensais:', error);
     }
@@ -172,13 +224,28 @@ function DashboardCompleto() {
   const filtrarPorPeriodo = (items) => {
     if (!dataInicial || !dataFinal) return items;
     
-    return items.filter(item => {
-      const dataItem = parseISO(item.data);
-      return isWithinInterval(dataItem, {
-        start: parseISO(dataInicial),
-        end: parseISO(dataFinal)
+    try {
+      const dataInicialObj = new Date(dataInicial + 'T00:00:00');
+      const dataFinalObj = new Date(dataFinal + 'T23:59:59');
+
+      return items.filter(item => {
+        try {
+          const dataItem = new Date(item.data);
+          console.log('Data do item:', dataItem);
+          console.log('Data inicial:', dataInicialObj);
+          console.log('Data final:', dataFinalObj);
+          console.log('Está no intervalo:', dataItem >= dataInicialObj && dataItem <= dataFinalObj);
+          
+          return dataItem >= dataInicialObj && dataItem <= dataFinalObj;
+        } catch (error) {
+          console.error('Erro ao processar data do item:', error);
+          return false;
+        }
       });
-    });
+    } catch (error) {
+      console.error('Erro ao filtrar por período:', error);
+      return items;
+    }
   };
 
   const vendasFiltradas = filtrarPorPeriodo(vendas);
@@ -235,11 +302,12 @@ function DashboardCompleto() {
     const vendasData = vendasFiltradas.map(venda => [
       format(new Date(venda.data), 'dd/MM/yyyy'),
       venda.descricao,
+      venda.itens.map(item => `${item.nomeProduto} (${item.quantidade})`).join(', '),
       `R$ ${Number(venda.valor).toFixed(2)}`
     ]);
     doc.autoTable({
       startY: 165,
-      head: [['Data', 'Descrição', 'Valor']],
+      head: [['Data', 'Descrição', 'Produtos', 'Valor']],
       body: vendasData,
       theme: 'grid'
     });
@@ -250,11 +318,12 @@ function DashboardCompleto() {
     const despesasData = despesasFiltradas.map(despesa => [
       format(new Date(despesa.data), 'dd/MM/yyyy'),
       despesa.descricao,
+      despesa.itens.map(item => `${item.produto} (${item.quantidade})`).join(', '),
       `R$ ${Number(despesa.valor).toFixed(2)}`
     ]);
     doc.autoTable({
       startY: doc.lastAutoTable.finalY + 25,
-      head: [['Data', 'Descrição', 'Valor']],
+      head: [['Data', 'Descrição', 'Produtos', 'Valor']],
       body: despesasData,
       theme: 'grid'
     });
@@ -292,18 +361,20 @@ function DashboardCompleto() {
     const vendasData = vendasFiltradas.map(venda => [
       format(new Date(venda.data), 'dd/MM/yyyy'),
       venda.descricao,
+      venda.itens.map(item => `${item.nomeProduto} (${item.quantidade})`).join(', '),
       Number(venda.valor)
     ]);
-    const wsVendas = XLSX.utils.aoa_to_sheet([['Data', 'Descrição', 'Valor'], ...vendasData]);
+    const wsVendas = XLSX.utils.aoa_to_sheet([['Data', 'Descrição', 'Produtos', 'Valor'], ...vendasData]);
     XLSX.utils.book_append_sheet(wb, wsVendas, 'Vendas');
 
     // Despesas
     const despesasData = despesasFiltradas.map(despesa => [
       format(new Date(despesa.data), 'dd/MM/yyyy'),
       despesa.descricao,
+      despesa.itens.map(item => `${item.produto} (${item.quantidade})`).join(', '),
       Number(despesa.valor)
     ]);
-    const wsDespesas = XLSX.utils.aoa_to_sheet([['Data', 'Descrição', 'Valor'], ...despesasData]);
+    const wsDespesas = XLSX.utils.aoa_to_sheet([['Data', 'Descrição', 'Produtos', 'Valor'], ...despesasData]);
     XLSX.utils.book_append_sheet(wb, wsDespesas, 'Despesas');
 
     XLSX.writeFile(wb, `dashboard_${data.replace(/\//g, '_')}.xlsx`);
@@ -332,13 +403,13 @@ function DashboardCompleto() {
 
     conteudo += 'ÚLTIMAS VENDAS\n';
     vendasFiltradas.forEach(venda => {
-      conteudo += `${format(new Date(venda.data), 'dd/MM/yyyy')} - ${venda.descricao} - R$ ${Number(venda.valor).toFixed(2)}\n`;
+      conteudo += `${format(new Date(venda.data), 'dd/MM/yyyy')} - ${venda.descricao} - ${venda.itens.map(item => `${item.nomeProduto} (${item.quantidade})`).join(', ')} - R$ ${Number(venda.valor).toFixed(2)}\n`;
     });
     conteudo += '\n';
 
     conteudo += 'ÚLTIMAS DESPESAS\n';
     despesasFiltradas.forEach(despesa => {
-      conteudo += `${format(new Date(despesa.data), 'dd/MM/yyyy')} - ${despesa.descricao} - R$ ${Number(despesa.valor).toFixed(2)}\n`;
+      conteudo += `${format(new Date(despesa.data), 'dd/MM/yyyy')} - ${despesa.descricao} - ${despesa.itens.map(item => `${item.produto} (${item.quantidade})`).join(', ')} - R$ ${Number(despesa.valor).toFixed(2)}\n`;
     });
 
     const blob = new Blob([conteudo], { type: 'text/plain' });
@@ -351,21 +422,105 @@ function DashboardCompleto() {
     handleExportClose();
   };
 
-  const columns = [
-    { 
-      field: 'data', 
-      headerName: 'Data', 
-      width: 130,
-      valueFormatter: (params) => format(new Date(params.value), 'dd/MM/yyyy', { locale: ptBR })
+  const colunasDespesas = [
+    {
+      field: 'data',
+      headerName: 'Data',
+      width: 120,
+      valueFormatter: (params) => {
+        return new Date(params.value).toLocaleDateString('pt-BR');
+      }
     },
     { field: 'descricao', headerName: 'Descrição', width: 200 },
-    { 
-      field: 'valor', 
-      headerName: 'Valor', 
-      width: 130,
-      valueFormatter: (params) => `R$ ${Number(params.value).toFixed(2)}`
+    { field: 'categoria', headerName: 'Categoria', width: 150 },
+    {
+      field: 'valor',
+      headerName: 'Valor',
+      width: 120,
+      valueFormatter: (params) => {
+        return `R$ ${Number(params.value).toFixed(2)}`;
+      }
     },
+    {
+      field: 'status',
+      headerName: 'Status',
+      width: 120
+    }
   ];
+
+  const colunasVendas = [
+    {
+      field: 'data',
+      headerName: 'Data',
+      width: 120,
+      valueFormatter: (params) => {
+        return new Date(params.value).toLocaleDateString('pt-BR');
+      }
+    },
+    { field: 'cliente', headerName: 'Entregador', width: 150 },
+    {
+      field: 'produtos',
+      headerName: 'Produtos',
+      width: 200,
+      renderCell: (params) => {
+        const itens = params.row.itens || [];
+        
+        if (!Array.isArray(itens) || itens.length === 0) {
+          return <div>Sem produtos</div>;
+        }
+
+        return (
+          <div style={{ whiteSpace: 'normal', wordWrap: 'break-word' }}>
+            {itens.map((item, index) => (
+              <div key={index}>
+                {item.nomeProduto}
+                {index < itens.length - 1 ? ', ' : ''}
+              </div>
+            ))}
+          </div>
+        );
+      }
+    },
+    {
+      field: 'quantidades',
+      headerName: 'Quantidade',
+      width: 120,
+      renderCell: (params) => {
+        const itens = params.row.itens || [];
+        
+        if (!Array.isArray(itens) || itens.length === 0) {
+          return <div>-</div>;
+        }
+
+        return (
+          <div style={{ whiteSpace: 'normal', wordWrap: 'break-word' }}>
+            {itens.map((item, index) => (
+              <div key={index}>
+                {item.quantidade}
+                {index < itens.length - 1 ? ', ' : ''}
+              </div>
+            ))}
+          </div>
+        );
+      }
+    },
+    {
+      field: 'valor',
+      headerName: 'Valor',
+      width: 120,
+      valueFormatter: (params) => {
+        return `R$ ${Number(params.value).toFixed(2)}`;
+      }
+    },
+    {
+      field: 'status',
+      headerName: 'Status',
+      width: 120
+    }
+  ];
+
+  // Cores para o gráfico de pizza
+  const CORES_PIZZA = ['#0088FE', '#00C49F', '#FFBB28', '#FF8042', '#8884D8', '#82CA9D'];
 
   if (isLoading) {
     return (
@@ -390,17 +545,34 @@ function DashboardCompleto() {
               type="date"
               label="Data Inicial"
               value={dataInicial}
-              onChange={(e) => setDataInicial(e.target.value)}
+              onChange={(e) => {
+                setDataInicial(e.target.value);
+                console.log('Nova data inicial:', e.target.value);
+              }}
               InputLabelProps={{ shrink: true }}
             />
             <TextField
               type="date"
               label="Data Final"
               value={dataFinal}
-              onChange={(e) => setDataFinal(e.target.value)}
+              onChange={(e) => {
+                setDataFinal(e.target.value);
+                console.log('Nova data final:', e.target.value);
+              }}
               InputLabelProps={{ shrink: true }}
             />
           </Box>
+          <Button
+            variant="contained"
+            onClick={() => {
+              setDataInicial('');
+              setDataFinal('');
+            }}
+            color="secondary"
+            sx={{ mr: 2 }}
+          >
+            Limpar Filtro
+          </Button>
           <Button
             variant="contained"
             startIcon={<DownloadIcon />}
@@ -509,68 +681,228 @@ function DashboardCompleto() {
       </Grid>
 
       {/* Gráficos */}
-      <Grid item xs={12} md={6}>
+      <Grid item xs={12} md={4}>
         <Paper sx={{ p: 3 }}>
-          <Typography variant="h6" gutterBottom>Evolução de Vendas</Typography>
+          <Typography variant="h6" gutterBottom>Evolução de Vendas (R$)</Typography>
           <Box sx={{ height: 300 }}>
             <ResponsiveContainer width="100%" height="100%">
               <LineChart data={vendasMensais}>
                 <CartesianGrid strokeDasharray="3 3" />
-                <XAxis dataKey="mes" />
-                <YAxis />
-                <ChartTooltip />
-                <Line type="monotone" dataKey="total" stroke="#8884d8" />
+                <XAxis 
+                  dataKey="mes"
+                  tick={{ fontSize: 12 }}
+                />
+                <YAxis 
+                  tick={{ fontSize: 12 }}
+                  tickFormatter={(value) => `R$ ${value}`}
+                />
+                <ChartTooltip 
+                  formatter={(value) => [`R$ ${value.toFixed(2)}`, "Valor Total"]}
+                  labelFormatter={(label) => `Mês: ${label}`}
+                />
+                <Line 
+                  type="monotone" 
+                  dataKey="total" 
+                  stroke="#8884d8" 
+                  name="Valor Total"
+                  dot={{ r: 4 }}
+                  label={{
+                    position: 'top',
+                    formatter: (value) => `R$ ${value.toFixed(0)}`,
+                    fontSize: 12
+                  }}
+                />
               </LineChart>
             </ResponsiveContainer>
+          </Box>
+          <Box sx={{ mt: 2, p: 2, bgcolor: 'background.paper', borderRadius: 1 }}>
+            <Typography variant="subtitle2" color="text.secondary" gutterBottom>
+              Resumo do Período
+            </Typography>
+            <Grid container spacing={2}>
+              <Grid item xs={6}>
+                <Typography variant="body2" color="text.secondary">
+                  Maior Venda:
+                </Typography>
+                <Typography variant="body1">
+                  R$ {Math.max(...vendasMensais.map(v => v.total)).toFixed(2)}
+                </Typography>
+              </Grid>
+              <Grid item xs={6}>
+                <Typography variant="body2" color="text.secondary">
+                  Menor Venda:
+                </Typography>
+                <Typography variant="body1">
+                  R$ {Math.min(...vendasMensais.map(v => v.total)).toFixed(2)}
+                </Typography>
+              </Grid>
+              <Grid item xs={12}>
+                <Typography variant="body2" color="text.secondary">
+                  Média Mensal:
+                </Typography>
+                <Typography variant="body1">
+                  R$ {(vendasMensais.reduce((acc, v) => acc + v.total, 0) / (vendasMensais.length || 1)).toFixed(2)}
+                </Typography>
+              </Grid>
+            </Grid>
           </Box>
         </Paper>
       </Grid>
 
-      <Grid item xs={12} md={6}>
+      <Grid item xs={12} md={4}>
         <Paper sx={{ p: 3 }}>
-          <Typography variant="h6" gutterBottom>Evolução de Produtos</Typography>
+          <Typography variant="h6" gutterBottom>Quantidade Vendida</Typography>
           <Box sx={{ height: 300 }}>
             <ResponsiveContainer width="100%" height="100%">
               <LineChart data={produtosMensais}>
                 <CartesianGrid strokeDasharray="3 3" />
-                <XAxis dataKey="mes" />
-                <YAxis />
-                <ChartTooltip />
-                <Line type="monotone" dataKey="total" stroke="#82ca9d" />
+                <XAxis 
+                  dataKey="mes"
+                  tick={{ fontSize: 12 }}
+                />
+                <YAxis 
+                  tick={{ fontSize: 12 }}
+                />
+                <ChartTooltip 
+                  formatter={(value) => [`${value} unidades`, "Quantidade"]}
+                  labelFormatter={(label) => `Mês: ${label}`}
+                />
+                <Line 
+                  type="monotone" 
+                  dataKey="total" 
+                  stroke="#82ca9d" 
+                  name="Quantidade"
+                  dot={{ r: 4 }}
+                  label={{
+                    position: 'top',
+                    fontSize: 12
+                  }}
+                />
               </LineChart>
+            </ResponsiveContainer>
+          </Box>
+          <Box sx={{ mt: 2, p: 2, bgcolor: 'background.paper', borderRadius: 1 }}>
+            <Typography variant="subtitle2" color="text.secondary" gutterBottom>
+              Resumo do Período
+            </Typography>
+            <Grid container spacing={2}>
+              <Grid item xs={6}>
+                <Typography variant="body2" color="text.secondary">
+                  Maior Quantidade:
+                </Typography>
+                <Typography variant="body1">
+                  {Math.max(...produtosMensais.map(p => p.total))} unidades
+                </Typography>
+              </Grid>
+              <Grid item xs={6}>
+                <Typography variant="body2" color="text.secondary">
+                  Menor Quantidade:
+                </Typography>
+                <Typography variant="body1">
+                  {Math.min(...produtosMensais.map(p => p.total))} unidades
+                </Typography>
+              </Grid>
+              <Grid item xs={12}>
+                <Typography variant="body2" color="text.secondary">
+                  Média Mensal:
+                </Typography>
+                <Typography variant="body1">
+                  {(produtosMensais.reduce((acc, p) => acc + p.total, 0) / (produtosMensais.length || 1)).toFixed(0)} unidades
+                </Typography>
+              </Grid>
+            </Grid>
+          </Box>
+        </Paper>
+      </Grid>
+
+      <Grid item xs={12} md={4}>
+        <Paper sx={{ p: 3 }}>
+          <Typography variant="h6" gutterBottom>Despesas por Categoria</Typography>
+          <Box sx={{ height: 300 }}>
+            <ResponsiveContainer width="100%" height="100%">
+              <PieChart>
+                <Pie
+                  data={despesasGrafico}
+                  dataKey="valor"
+                  nameKey="categoria"
+                  cx="50%"
+                  cy="50%"
+                  outerRadius={80}
+                  label={({
+                    cx,
+                    cy,
+                    midAngle,
+                    innerRadius,
+                    outerRadius,
+                    value,
+                    name
+                  }) => {
+                    const RADIAN = Math.PI / 180;
+                    const radius = 25 + innerRadius + (outerRadius - innerRadius);
+                    const x = cx + radius * Math.cos(-midAngle * RADIAN);
+                    const y = cy + radius * Math.sin(-midAngle * RADIAN);
+                    return (
+                      <text
+                        x={x}
+                        y={y}
+                        fill="#000"
+                        textAnchor={x > cx ? 'start' : 'end'}
+                        dominantBaseline="central"
+                        style={{ fontSize: '12px' }}
+                      >
+                        {`${name}: R$ ${value.toFixed(0)}`}
+                      </text>
+                    );
+                  }}
+                >
+                  {despesasGrafico.map((entry, index) => (
+                    <Cell key={`cell-${index}`} fill={CORES_PIZZA[index % CORES_PIZZA.length]} />
+                  ))}
+                </Pie>
+                <ChartTooltip 
+                  formatter={(value) => `R$ ${value.toFixed(2)}`}
+                  labelFormatter={(name) => `Categoria: ${name}`}
+                />
+                <Legend 
+                  formatter={(value) => value.length > 20 ? value.substr(0, 20) + '...' : value}
+                  wrapperStyle={{ fontSize: '12px' }}
+                />
+              </PieChart>
             </ResponsiveContainer>
           </Box>
         </Paper>
       </Grid>
 
       {/* Tabelas */}
-      <Grid item xs={12} md={6}>
-        <Paper sx={{ p: 2, display: 'flex', flexDirection: 'column', height: 400 }}>
-          <Typography component="h2" variant="h6" color="primary" gutterBottom>
+      <Grid item xs={12}>
+        <Paper sx={{ p: 2 }}>
+          <Typography variant="h6" gutterBottom component="div">
             Últimas Vendas
           </Typography>
           <DataGrid
             rows={vendasFiltradas}
-            columns={columns}
+            columns={colunasVendas}
             pageSize={5}
             rowsPerPageOptions={[5]}
             disableSelectionOnClick
             autoHeight
+            getRowId={(row) => row._id}
           />
         </Paper>
       </Grid>
-      <Grid item xs={12} md={6}>
-        <Paper sx={{ p: 2, display: 'flex', flexDirection: 'column', height: 400 }}>
-          <Typography component="h2" variant="h6" color="error" gutterBottom>
+      <Grid item xs={12}>
+        <Paper sx={{ p: 2 }}>
+          <Typography variant="h6" gutterBottom component="div">
             Últimas Despesas
           </Typography>
           <DataGrid
             rows={despesasFiltradas}
-            columns={columns}
+            columns={colunasDespesas}
             pageSize={5}
             rowsPerPageOptions={[5]}
             disableSelectionOnClick
             autoHeight
+            getRowId={(row) => row._id}
           />
         </Paper>
       </Grid>

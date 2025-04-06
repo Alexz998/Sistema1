@@ -26,7 +26,8 @@ import {
   FormControl,
   InputLabel,
   Select,
-  Checkbox
+  Checkbox,
+  InputAdornment
 } from '@mui/material';
 import { DataGrid } from '@mui/x-data-grid';
 import AddIcon from '@mui/icons-material/Add';
@@ -44,8 +45,9 @@ import { toast } from 'react-toastify';
 import jsPDF from 'jspdf';
 import 'jspdf-autotable';
 import * as XLSX from 'xlsx';
+import { formatarMoeda, formatarNumero, formatarQuantidade } from '../utils/formatadores';
 
-const API_URL = 'http://localhost:5001/api';
+const API_URL = 'http://localhost:5002/api';
 
 const Vendas = () => {
   const [vendas, setVendas] = useState([]);
@@ -79,34 +81,45 @@ const Vendas = () => {
 
   useEffect(() => {
     fetchVendas();
-    fetchProdutos();
   }, []);
 
   const fetchVendas = async () => {
     try {
-      const response = await axios.get(`${API_URL}/vendas`, {
+      // Primeiro, buscar os produtos
+      const produtosResponse = await axios.get(`${API_URL}/produtos`, {
         headers: {
           Authorization: `Bearer ${localStorage.getItem('token')}`,
         },
       });
-      setVendas(response.data);
+      const produtosData = produtosResponse.data;
+      setProdutos(produtosData);
+
+      // Depois, buscar as vendas
+      const vendasResponse = await axios.get(`${API_URL}/vendas`, {
+        headers: {
+          Authorization: `Bearer ${localStorage.getItem('token')}`,
+        },
+      });
+
+      // Formatar as vendas com os produtos
+      const vendasFormatadas = vendasResponse.data.map(venda => {
+        const itensFormatados = venda.itens.map(item => {
+          return {
+            ...item,
+            nomeProduto: item.produto.nome || 'Produto não encontrado'
+          };
+        });
+
+        return {
+          ...venda,
+          itens: itensFormatados
+        };
+      });
+
+      setVendas(vendasFormatadas);
     } catch (error) {
       console.error('Erro ao carregar vendas:', error);
       toast.error('Erro ao carregar vendas');
-    }
-  };
-
-  const fetchProdutos = async () => {
-    try {
-      const response = await axios.get(`${API_URL}/produtos`, {
-        headers: {
-          Authorization: `Bearer ${localStorage.getItem('token')}`,
-        },
-      });
-      setProdutos(response.data);
-    } catch (error) {
-      console.error('Erro ao carregar produtos:', error);
-      toast.error('Erro ao carregar produtos');
     }
   };
 
@@ -345,7 +358,7 @@ const Vendas = () => {
       // Adicionar totais
       const totalVendas = vendasFiltradas.reduce((total, venda) => total + Number(venda.valor), 0);
       doc.setFontSize(12);
-      doc.text(`Total de Vendas: R$ ${totalVendas.toFixed(2)}`, 14, doc.lastAutoTable.finalY + 10);
+      doc.text(`Total de Vendas: ${formatarMoeda(totalVendas)}`, 14, doc.lastAutoTable.finalY + 10);
       
       // Salvar o PDF
       doc.save(`vendas_${new Date().toISOString().split('T')[0]}.pdf`);
@@ -539,98 +552,152 @@ const Vendas = () => {
 
   const columns = [
     {
-      field: 'selection',
-      headerName: '',
-      width: 50,
-      renderCell: (params) => (
-        <Checkbox
-          checked={selectedVendas.some(venda => venda._id === params.row._id)}
-          onChange={(e) => {
-            if (e.target.checked) {
-              setSelectedVendas([...selectedVendas, params.row]);
-            } else {
-              setSelectedVendas(selectedVendas.filter(venda => venda._id !== params.row._id));
-            }
-          }}
-        />
-      ),
-    },
-    { 
-      field: 'data', 
-      headerName: 'Data', 
-      width: 130,
+      field: 'data',
+      headerName: 'Data',
+      width: 120,
       valueFormatter: (params) => {
-        if (!params.value) return '';
-        const data = new Date(params.value);
-        return data.toLocaleDateString('pt-BR');
+        return new Date(params.value).toLocaleDateString('pt-BR');
       }
     },
-    { field: 'cliente', headerName: 'Entregador', width: 200 },
-    { 
-      field: 'valor', 
-      headerName: 'Valor', 
-      width: 130,
-      valueFormatter: (params) => {
-        return `R$ ${params.value.toFixed(2)}`;
+    { field: 'cliente', headerName: 'Entregador', width: 150 },
+    {
+      field: 'produtos',
+      headerName: 'Produtos',
+      width: 200,
+      renderCell: (params) => {
+        const itens = params.row.itens || [];
+        
+        if (!Array.isArray(itens) || itens.length === 0) {
+          return <div>Sem produtos</div>;
+        }
+
+        return (
+          <div style={{ whiteSpace: 'normal', wordWrap: 'break-word' }}>
+            {itens.map((item, index) => (
+              <div key={index}>
+                {item.produto.nome}
+                {index < itens.length - 1 ? ', ' : ''}
+              </div>
+            ))}
+          </div>
+        );
       }
     },
-    { field: 'formaPagamento', headerName: 'Forma de Pagamento', width: 180 },
-    { field: 'status', headerName: 'Status', width: 130 },
-    { field: 'observacoes', headerName: 'Descrição', width: 200 },
+    {
+      field: 'quantidades',
+      headerName: 'Quantidade',
+      width: 120,
+      renderCell: (params) => {
+        const itens = params.row.itens || [];
+        
+        if (!Array.isArray(itens) || itens.length === 0) {
+          return <div>-</div>;
+        }
+
+        return (
+          <div style={{ whiteSpace: 'normal', wordWrap: 'break-word' }}>
+            {itens.map((item, index) => (
+              <div key={index}>
+                {item.quantidade}
+                {index < itens.length - 1 ? ', ' : ''}
+              </div>
+            ))}
+          </div>
+        );
+      }
+    },
+    {
+      field: 'formaPagamento',
+      headerName: 'Forma de Pagamento',
+      width: 160
+    },
+    {
+      field: 'valor',
+      headerName: 'Valor',
+      width: 120,
+      valueFormatter: (params) => formatarMoeda(params.value)
+    },
+    {
+      field: 'status',
+      headerName: 'Status',
+      width: 120
+    },
     {
       field: 'acoes',
       headerName: 'Ações',
       width: 120,
+      sortable: false,
       renderCell: (params) => (
         <Box>
           <Tooltip title="Editar">
-            <IconButton onClick={() => handleEdit(params.row)}>
+            <IconButton onClick={() => handleEdit(params.row)} size="small">
               <EditIcon />
             </IconButton>
           </Tooltip>
           <Tooltip title="Excluir">
-            <IconButton onClick={() => handleDelete(params.row)}>
+            <IconButton onClick={() => handleDelete(params.row)} size="small">
               <DeleteIcon />
             </IconButton>
           </Tooltip>
         </Box>
-      ),
-    },
+      )
+    }
   ];
 
   // Função para aplicar os filtros
   const vendasFiltradas = vendas.filter(venda => {
+    console.log('Filtrando venda:', venda);
+    console.log('Filtros aplicados:', filtros);
+
     // Filtro de entregador
     if (filtros.entregador && !venda.cliente.toLowerCase().includes(filtros.entregador.toLowerCase())) {
+      console.log('Filtro de entregador não passou');
       return false;
     }
 
     // Filtro de forma de pagamento
     if (filtros.formaPagamento && venda.formaPagamento !== filtros.formaPagamento) {
+      console.log('Filtro de forma de pagamento não passou');
       return false;
     }
 
     // Filtro de status
     if (filtros.status && venda.status !== filtros.status) {
+      console.log('Filtro de status não passou');
       return false;
     }
 
     // Filtro de data
-    if (filtros.dataInicial && new Date(venda.data) < new Date(filtros.dataInicial)) {
-      return false;
+    if (filtros.dataInicial) {
+      const dataVenda = new Date(venda.data);
+      const dataInicial = new Date(filtros.dataInicial);
+      dataInicial.setHours(0, 0, 0, 0);
+      if (dataVenda < dataInicial) {
+        console.log('Filtro de data inicial não passou');
+        return false;
+      }
     }
-    if (filtros.dataFinal && new Date(venda.data) > new Date(filtros.dataFinal)) {
-      return false;
+    if (filtros.dataFinal) {
+      const dataVenda = new Date(venda.data);
+      const dataFinal = new Date(filtros.dataFinal);
+      dataFinal.setHours(23, 59, 59, 999);
+      if (dataVenda > dataFinal) {
+        console.log('Filtro de data final não passou');
+        return false;
+      }
     }
 
     // Filtro de valor
-    if (filtros.valorMinimo && venda.valor < Number(filtros.valorMinimo)) {
+    if (filtros.valorMinimo && Number(venda.valor) < Number(filtros.valorMinimo)) {
+      console.log('Filtro de valor mínimo não passou');
       return false;
     }
-    if (filtros.valorMaximo && venda.valor > Number(filtros.valorMaximo)) {
+    if (filtros.valorMaximo && Number(venda.valor) > Number(filtros.valorMaximo)) {
+      console.log('Filtro de valor máximo não passou');
       return false;
     }
 
+    console.log('Venda passou em todos os filtros');
     return true;
   });
 
@@ -652,6 +719,14 @@ const Vendas = () => {
       valorMaximo: ''
     });
   };
+
+  // Adicionar useEffect para debug dos filtros
+  useEffect(() => {
+    console.log('Filtros atuais:', filtros);
+    console.log('Total de vendas:', vendas.length);
+    console.log('Total de vendas filtradas:', vendasFiltradas.length);
+    console.log('Vendas filtradas:', vendasFiltradas);
+  }, [filtros, vendas, vendasFiltradas]);
 
   return (
     <Grid container spacing={3}>
@@ -744,17 +819,19 @@ const Vendas = () => {
                     label="Entregador"
                     value={filtros.entregador}
                     onChange={(e) => handleFiltroChange('entregador', e.target.value)}
+                    variant="outlined"
+                    size="small"
                   />
                 </Grid>
                 <Grid item xs={12} sm={6} md={3}>
-                  <FormControl fullWidth>
+                  <FormControl fullWidth size="small">
                     <InputLabel>Forma de Pagamento</InputLabel>
                     <Select
                       value={filtros.formaPagamento}
                       label="Forma de Pagamento"
                       onChange={(e) => handleFiltroChange('formaPagamento', e.target.value)}
                     >
-                      <MenuItem value="">Todos</MenuItem>
+                      <MenuItem value="">Todas</MenuItem>
                       <MenuItem value="Dinheiro">Dinheiro</MenuItem>
                       <MenuItem value="Cartão de Crédito">Cartão de Crédito</MenuItem>
                       <MenuItem value="Cartão de Débito">Cartão de Débito</MenuItem>
@@ -764,7 +841,7 @@ const Vendas = () => {
                   </FormControl>
                 </Grid>
                 <Grid item xs={12} sm={6} md={3}>
-                  <FormControl fullWidth>
+                  <FormControl fullWidth size="small">
                     <InputLabel>Status</InputLabel>
                     <Select
                       value={filtros.status}
@@ -786,6 +863,8 @@ const Vendas = () => {
                     value={filtros.dataInicial}
                     onChange={(e) => handleFiltroChange('dataInicial', e.target.value)}
                     InputLabelProps={{ shrink: true }}
+                    variant="outlined"
+                    size="small"
                   />
                 </Grid>
                 <Grid item xs={12} sm={6} md={3}>
@@ -796,6 +875,8 @@ const Vendas = () => {
                     value={filtros.dataFinal}
                     onChange={(e) => handleFiltroChange('dataFinal', e.target.value)}
                     InputLabelProps={{ shrink: true }}
+                    variant="outlined"
+                    size="small"
                   />
                 </Grid>
                 <Grid item xs={12} sm={6} md={3}>
@@ -805,6 +886,11 @@ const Vendas = () => {
                     label="Valor Mínimo"
                     value={filtros.valorMinimo}
                     onChange={(e) => handleFiltroChange('valorMinimo', e.target.value)}
+                    InputProps={{
+                      startAdornment: <InputAdornment position="start">R$</InputAdornment>,
+                    }}
+                    variant="outlined"
+                    size="small"
                   />
                 </Grid>
                 <Grid item xs={12} sm={6} md={3}>
@@ -814,6 +900,11 @@ const Vendas = () => {
                     label="Valor Máximo"
                     value={filtros.valorMaximo}
                     onChange={(e) => handleFiltroChange('valorMaximo', e.target.value)}
+                    InputProps={{
+                      startAdornment: <InputAdornment position="start">R$</InputAdornment>,
+                    }}
+                    variant="outlined"
+                    size="small"
                   />
                 </Grid>
               </Grid>
@@ -823,27 +914,78 @@ const Vendas = () => {
       </Grid>
 
       <Grid item xs={12}>
-        <Paper sx={{ width: '100%' }}>
-          <Box sx={{ height: 400 }}>
-            <DataGrid
-              rows={vendasFiltradas}
-              columns={columns}
-              pageSize={5}
-              rowsPerPageOptions={[5]}
-              disableSelectionOnClick
-              getRowId={(row) => row._id}
-            />
+        <Paper sx={{ p: 2, display: 'flex', flexDirection: 'column' }}>
+          <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 2 }}>
+            <Typography component="h2" variant="h6" color="primary">
+              Vendas
+            </Typography>
+            <Box sx={{ display: 'flex', gap: 1 }}>
+              <Button
+                variant="contained"
+                startIcon={<FilterListIcon />}
+                onClick={() => setShowFiltros(!showFiltros)}
+              >
+                Filtros
+              </Button>
+              <Button
+                variant="contained"
+                startIcon={<DownloadIcon />}
+                onClick={handleExportClick}
+              >
+                Exportar
+              </Button>
+              <Button
+                variant="contained"
+                startIcon={<AddIcon />}
+                onClick={handleOpen}
+              >
+                Nova Venda
+              </Button>
+            </Box>
           </Box>
-          <Box sx={{ p: 2, display: 'flex', justifyContent: 'flex-end', borderTop: 1, borderColor: 'divider', gap: 3 }}>
-            <Typography variant="h6" color="error">
-              Subtotal (Pendente/Entregue): R$ {vendasFiltradas
-                .filter(venda => venda.status === 'Pendente' || venda.status === 'Entregue')
-                .reduce((total, venda) => total + Number(venda.valor), 0)
-                .toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
-            </Typography>
-            <Typography variant="h6">
-              Total: R$ {vendasFiltradas.reduce((total, venda) => total + Number(venda.valor), 0).toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
-            </Typography>
+
+          <DataGrid
+            rows={vendasFiltradas}
+            columns={columns}
+            pageSize={10}
+            rowsPerPageOptions={[10]}
+            checkboxSelection
+            disableSelectionOnClick
+            autoHeight
+            getRowId={(row) => row._id}
+            onSelectionModelChange={(newSelection) => {
+              setSelectedVendas(newSelection);
+            }}
+          />
+
+          {/* Totalizador de Vendas */}
+          <Box sx={{ mt: 2, p: 2, bgcolor: 'background.paper', borderRadius: 1 }}>
+            <Grid container spacing={2}>
+              <Grid item xs={12} sm={6} md={3}>
+                <Typography variant="subtitle1" color="text.secondary">
+                  Total de Vendas:
+                </Typography>
+                <Typography variant="h6" color="success.main">
+                  {formatarMoeda(vendasFiltradas.reduce((total, venda) => total + Number(venda.valor), 0))}
+                </Typography>
+              </Grid>
+              <Grid item xs={12} sm={6} md={3}>
+                <Typography variant="subtitle1" color="text.secondary">
+                  Quantidade de Vendas:
+                </Typography>
+                <Typography variant="h6">
+                  {formatarQuantidade(vendasFiltradas.length)}
+                </Typography>
+              </Grid>
+              <Grid item xs={12} sm={6} md={3}>
+                <Typography variant="subtitle1" color="text.secondary">
+                  Total de Itens Vendidos:
+                </Typography>
+                <Typography variant="h6">
+                  {formatarQuantidade(vendasFiltradas.reduce((total, venda) => total + venda.itens.reduce((subtotal, item) => subtotal + Number(item.quantidade), 0), 0))}
+                </Typography>
+              </Grid>
+            </Grid>
           </Box>
         </Paper>
       </Grid>
@@ -973,7 +1115,7 @@ const Vendas = () => {
                             />
                           </TableCell>
                           <TableCell>
-                            R$ {subtotal.toFixed(2)}
+                            {formatarMoeda(subtotal)}
                           </TableCell>
                           <TableCell>
                             <IconButton onClick={() => handleRemoveItem(index)}>
@@ -989,7 +1131,7 @@ const Vendas = () => {
 
               <Box display="flex" justifyContent="flex-end" mt={2}>
                 <Typography variant="h6">
-                  Total: R$ {calcularTotal().toFixed(2)}
+                  Total: {formatarMoeda(calcularTotal())}
                 </Typography>
               </Box>
             </Grid>
